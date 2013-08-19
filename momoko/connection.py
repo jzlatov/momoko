@@ -14,7 +14,7 @@ from collections import deque
 
 import psycopg2
 from psycopg2.extras import register_hstore as _psy_register_hstore
-from psycopg2.extensions import (connection as base_connection, cursor as base_cursor,
+from psycopg2.extensions import (connection as base_connection,
     POLL_OK, POLL_READ, POLL_WRITE, POLL_ERROR, TRANSACTION_STATUS_IDLE)
 
 from tornado import gen
@@ -64,26 +64,32 @@ class Pool:
         self._pool = []
 
         # Create connections
-        def after_pool_creation(n, connection):
+        def after_pool_creation(n, connection, error):
             if n == self.size-1:
                 if callback:
-                    callback()
+                    callback(error)
 
         for i in range(self.size):
             self._new(partial(after_pool_creation, i))
 
     def _new(self, callback=None):
+        if self.closed:
+            raise PoolError('connection pool is closed')
+
         def multi_callback(connection, error):
-            if error:
-                raise error
             if callback:
-                callback(connection)
+                callback(connection, error)
+            if error:
+                return
             self._pool.append(connection)
 
         Connection(self.dsn, self.connection_factory,
             multi_callback, self._ioloop)
 
     def _get_connection(self):
+        if self.closed:
+            raise PoolError('connection pool is closed')
+
         for connection in self._pool:
             if not connection.busy():
                 return connection
@@ -158,6 +164,9 @@ class Pool:
         See :py:meth:`momoko.Connection.mogrify` for documentation about the
         parameters.
         """
+        if self.closed:
+            raise PoolError('connection pool is closed')
+
         self._pool[0].mogrify(operation, parameters, callback)
 
     def register_hstore(self, unicode=False, callback=None):
@@ -231,8 +240,8 @@ class Connection:
         self.connection = psycopg2.connect(dsn, async=1,
             connection_factory=connection_factory or base_connection)
         self.fileno = self.connection.fileno()
-        self._transaction_status = self.connection.get_transaction_status
         self.ioloop = ioloop or IOLoop.instance()
+        self._transaction_status = self.connection.get_transaction_status
 
         if callback:
             self.callback = partial(callback, self)
@@ -285,10 +294,11 @@ class Connection:
         .. _psycopg2.extensions.cursor: http://initd.org/psycopg/docs/extensions.html#psycopg2.extensions.cursor
         .. _Connection and cursor factories: http://initd.org/psycopg/docs/advanced.html#subclassing-cursor
         """
-        kwargs={}
         if cursor_factory:
-            kwargs.setdefault('cursor_factory', cursor_factory)
-        cursor = self.connection.cursor(**kwargs)
+            cursor = self.connection.cursor(cursor_factory=cursor_factory)
+        else:
+            cursor = self.connection.cursor()
+
         cursor.execute(operation, parameters)
         self.callback = partial(callback or _dummy_callback, cursor)
         self.ioloop.add_handler(self.fileno, self.io_callback, IOLoop.WRITE)
@@ -329,10 +339,11 @@ class Connection:
         .. _psycopg2.extensions.cursor: http://initd.org/psycopg/docs/extensions.html#psycopg2.extensions.cursor
         .. _Connection and cursor factories: http://initd.org/psycopg/docs/advanced.html#subclassing-cursor
         """
-        kwargs={}
         if cursor_factory:
-            kwargs.setdefault('cursor_factory', cursor_factory)
-        cursor = self.connection.cursor(**kwargs)
+            cursor = self.connection.cursor(cursor_factory=cursor_factory)
+        else:
+            cursor = self.connection.cursor()
+
         cursor.callproc(procname, parameters)
         self.callback = partial(callback or _dummy_callback, cursor)
         self.ioloop.add_handler(self.fileno, self.io_callback, IOLoop.WRITE)

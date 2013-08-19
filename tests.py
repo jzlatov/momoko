@@ -34,12 +34,14 @@ elif psycopg2_impl == 'psycopg2ct':
 
 import momoko
 import psycopg2
+from psycopg2.extras import NamedTupleConnection
 
 
 class BaseTest(AsyncTestCase):
     def __init__(self, *args, **kwargs):
         self.assert_equal = self.assertEqual
         self.assert_raises = self.assertRaises
+        self.assert_true = self.assertTrue
         self.assert_is_instance = lambda object, classinfo: self.assertTrue(isinstance(object, classinfo))
         super(BaseTest, self).__init__(*args, **kwargs)
 
@@ -279,6 +281,51 @@ class MomokoTest(BaseTest):
             self.stop()
 
         self.assert_raises(psycopg2.ProgrammingError, self.run_gen, func)
+
+    def test_namedtuple_connection(self):
+
+        db = momoko.Pool(
+            dsn=dsn,
+            size=1,
+            connection_factory=NamedTupleConnection,
+            callback=self.stop,
+            ioloop=self.io_loop
+        )
+        self.wait()
+
+        db.execute('SELECT 1 as one, 2 as two, 3 as three;', callback=self.stop_callback)
+        cursor = self.wait_for_result()
+        row = cursor.fetchone()
+
+        self.assert_true(hasattr(row, 'one'))
+        self.assert_true(hasattr(row, 'two'))
+        self.assert_true(hasattr(row, 'three'))
+
+        db.close()
+
+    def test_closed_pool(self):
+
+        db = momoko.Pool(
+            dsn=dsn,
+            size=1,
+            callback=self.stop,
+            ioloop=self.io_loop
+        )
+        self.wait()
+        db.close()
+
+        self.assert_raises(momoko.PoolError, db.execute,
+            'SELECT 1 as one, 2 as two, 3 as three;')
+
+    def test_connect_exception(self):
+        db = momoko.Pool(
+            dsn='dbname=momoko user=bleep password=bleep host=localhost port=5432',
+            size=1,
+            callback=self.stop,
+            ioloop=self.io_loop,
+        )
+        error = self.wait()
+        self.assert_is_instance(error, psycopg2.Error)
 
 
 if __name__ == '__main__':
